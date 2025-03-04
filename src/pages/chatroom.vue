@@ -1,280 +1,285 @@
 <template>
-    <div class="h-100">
-        <vue-advanced-chat
-            height="100%"
-            :current-user-id="currentUserId"
-            :rooms="JSON.stringify(rooms)"
-            :load-first-room="false"
-            :rooms-loaded="true"
-            :messages="JSON.stringify(messages)"
-            :messages-loaded="messagesLoaded"
-            dark-mode
-            @send-message="sendMessage($event.detail[0])"
-            @fetch-messages="fetchMessages($event.detail[0])"
-        />
-    </div>
-    <!-- fab -->
-    <v-fab
-        v-if="!detailDrawer"
-        :absolute="false"
-        :app="true"
-        color="secondary"
-        :location="'right top'"
-        size="large"
-        icon="mdi-text"
-        variant="text"
-        class="mt-n2"
-        @click="detailDrawer = true"
-    ></v-fab>
+    <v-container fluid class="chat-container pa-0">
+        <v-row no-gutters>
+            <!-- 左側聊天室列表 -->
+            <v-col cols="3" class="chat-sidebar">
+                <v-card outlined>
+                    <v-card-title>聊天室</v-card-title>
+                    <v-divider></v-divider>
+                    <v-list dense>
+                        <v-list-item
+                            v-for="room in chatRooms"
+                            :key="room.roomId"
+                            @click="selectRoom(room)"
+                            :class="{ active: room.roomId === currentRoomId }"
+                            link
+                        >
+                            <v-list-item-avatar>
+                                <v-img :src="room.avatar || defaultAvatar"></v-img>
+                            </v-list-item-avatar>
+                            <v-list-item-content>
+                                <v-list-item-title>{{ room.roomName }}</v-list-item-title>
+                                <v-list-item-subtitle>{{ room.lastMessage || '' }}</v-list-item-subtitle>
+                            </v-list-item-content>
+                        </v-list-item>
+                    </v-list>
+                </v-card>
+            </v-col>
 
-    <!-- 右邊側邊攔資訊 -->
-    <v-navigation-drawer v-model="detailDrawer" location="end">
-        <template #prepend>
-            <v-toolbar color="gray">
-                <v-btn icon="mdi-arrow-right" variant="text" @click="detailDrawer = false"></v-btn>
-                <span class="text-h5">交換設定</span>
-            </v-toolbar>
-        </template>
-
-        <!-- 表單:詳細資訊設定 -->
-        <!-- <v-form :disabled="isSubmitting" @submit.prevent="submit"> -->
-        <v-card flat>
-            <v-card-title> </v-card-title>
-            <v-card-text>
-                <v-form>
-                    <v-text-field variant="outlined" label="交換頻率" flat />
-                    <v-text-field variant="outlined" label="交換結束日期" flat />
-                </v-form>
-            </v-card-text>
-        </v-card>
-
-        <v-divider />
-        <template #append>
-            <v-btn block color="success" class="rounded-0" flat size="x-large">開始交換</v-btn>
-        </template>
-        <v-list density="compact" nav>
-            <!-- <v-list-item prepend-icon="mdi-home-city" title="Home" value="home" /> -->
-        </v-list>
-    </v-navigation-drawer>
+            <!-- 右側聊天區域 -->
+            <v-col cols="9" class="chat-main">
+                <v-card class="chat-card" outlined>
+                    <v-card-title class="chat-header">
+                        <span>{{ currentRoomName || '請選擇聊天室' }}</span>
+                    </v-card-title>
+                    <v-divider></v-divider>
+                    <v-card-text class="chat-messages" ref="chatMessages">
+                        <div
+                            v-for="(msg, index) in messages"
+                            :key="index"
+                            :class="msg.senderId === currentUserId ? 'message-sent' : 'message-received'"
+                        >
+                            <div class="message-content">{{ msg.content }}</div>
+                            <div class="message-time">{{ formatTimestamp(msg.timestamp) }}</div>
+                        </div>
+                    </v-card-text>
+                    <v-divider></v-divider>
+                    <v-card-actions class="chat-input">
+                        <v-text-field
+                            v-model="newMessage"
+                            label="輸入訊息"
+                            outlined
+                            dense
+                            hide-details
+                            class="flex-grow-1"
+                            @keyup.enter="sendMessage"
+                        ></v-text-field>
+                        <v-btn color="primary" @click="sendMessage">發送</v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-col>
+        </v-row>
+    </v-container>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { register } from 'vue-advanced-chat'
+import { ref, onMounted, nextTick } from 'vue'
 import { io } from 'socket.io-client'
 import { useUserStore } from '@/stores/user'
+import { useRoute, useRouter } from 'vue-router'
+import { useAxios } from '@/composables/axios'
+import dayjs from 'dayjs'
 
-// 註冊 vue-advanced-chat
-register()
+const { apiAuth } = useAxios()
+const userStore = useUserStore()
+const router = useRouter()
+const route = useRoute()
 
-const user = useUserStore()
+// 預設頭像
+const defaultAvatar = 'https://cdn.vuetifyjs.com/images/cards/docks.jpg'
 
-// 側邊欄
-const detailDrawer = ref(false)
+// 目前使用者ID（假設 userStore.userId 為字串）
+const currentUserId = ref(userStore.userId)
 
-const currentUserId = ref(user.userId)
-console.log('currentUserId:', currentUserId.value)
+// 從網址 query 中取得 targetUserId（代表點選「聯絡他」）
+const targetUserId = route.query.userId || ''
 
-const rooms = ref([
-    {
-        roomId: '1',
-        roomName: 'Room 1',
-        avatar: 'https://66.media.tumblr.com/avatar_c6a8eae4303e_512.pnj',
-        users: [
-            { _id: '1234', username: 'John Doe' },
-            { _id: '4321', username: 'John Snow' },
-        ],
-    },
-    {
-        roomId: '2',
-        roomName: 'Room 2',
-        avatar: 'https://66.media.tumblr.com/avatar_c6a8eae4303e_512.pnj',
-        users: [
-            { _id: '1234', username: 'John Doe' },
-            { _id: '4321', username: 'John Snow' },
-        ],
-    },
-])
-
-// vue adv chat變數
+// 儲存聊天室列表 (格式必須包含 roomId, roomName, avatar, lastMessage 與 users[ { _id, username } ])
+const chatRooms = ref([])
+// rooms 傳給聊天區的資料 (此處與 chatRooms 可以一致)
+const rooms = ref([])
+// 當前聊天室ID與名稱
+const currentRoomId = ref(null)
+const currentRoomName = ref('')
+// 當前聊天室訊息
 const messages = ref([])
-const messagesLoaded = ref(false)
-let currentRoomId = ref('1')
+// 訊息輸入框
+const newMessage = ref('')
 
-// socket
-let socket = null
-socket = io(import.meta.env.VITE_BACKEND_URL) // 只有進入聊天室時才連線
-socket.on('receiveMessage', (message) => {
-    console.log('message.roomId:', message.roomId)
-    console.log('currentRoomId:', currentRoomId.value)
-    if (message.roomId !== currentRoomId.value) return
-    messages.value.push(message)
+// Socket.io 連線設定
+let socket = io(import.meta.env.VITE_BACKEND_URL)
+socket.on('receiveMessage', (msg) => {
+    if (msg.roomId !== currentRoomId.value) return
+    messages.value.push(msg)
+    nextTick(() => scrollToBottom())
 })
 
-function fetchMessages(options = {}) {
-    console.log('options:', options)
-
-    // 加入特定聊天室
-    // socket.emit('joinRoom', roomid字串)
-    console.log('fetchMessages:socket: ', socket)
-
-    // 切換currentRoomId
-    currentRoomId.value = options.room.roomId
-    // 加入當前房間
-    socket.emit('joinRoom', options.room.roomId)
-
-    // ajax 載入就訊息
-    messages.value.splice(0)
-    if (options.reset) {
-        messages.value = addMessages(true, options.room.roomId)
-    } else {
-        messages.value = [...addMessages(false, options.room.roomId), ...messages.value]
-        messagesLoaded.value = true
+// 取得當前聊天室訊息
+async function fetchMessages(roomId) {
+    try {
+        const res = await apiAuth.get('/chat/messages', { params: { roomId } })
+        if (res.data.success) {
+            messages.value = res.data.result
+            nextTick(() => scrollToBottom())
+        }
+    } catch (error) {
+        console.error('fetchMessages error:', error)
     }
-    // addNewMessage()
 }
 
-const fakeRoomsMsgs = [
-    {
-        roomId: '1',
-        messages: [
-            {
-                _id: 0,
-                content: `room1 的開頭 ${0}`,
-                senderId: '4321',
-                username: 'John Doe',
-                date: '13 November',
-                timestamp: '10:20',
-            },
-        ],
-    },
-    {
-        roomId: '2',
-        messages: [
-            {
-                _id: 0,
-                content: `room2 的開頭 ${0}`,
-                senderId: '4321',
-                username: 'John Doe',
-                date: '13 November',
-                timestamp: '10:20',
-            },
-        ],
-    },
-]
-
-function addMessages(reset, roomId) {
-    const newMessages = []
-    newMessages.push(...fakeRoomsMsgs.find((room) => room.roomId === roomId).messages)
-    // newMessages.push({
-    //     _id: 0,
-    //     content: `room ${roomId} 的開頭 ${0}`,
-    //     senderId: '4321',
-    //     username: 'John Doe',
-    //     date: '13 November',
-    //     timestamp: '10:20',
-    // })
-    // for (let i = 1; i < 31; i++) {
-    //     newMessages.push({
-    //         _id: reset ? i : messages.value.length + i,
-    //         content: `${reset ? '' : 'paginated'} message ${i}`,
-    //         senderId: '4321',
-    //         username: 'John Doe',
-    //         date: '13 November',
-    //         timestamp: '10:20',
-    //     })
-    // }
-
-    return newMessages
+// 切換聊天室：更新當前聊天室，加入 socket 房間，並取得訊息
+function selectRoom(room) {
+    currentRoomId.value = room.roomId
+    currentRoomName.value = room.roomName
+    socket.emit('joinRoom', room.roomId)
+    fetchMessages(room.roomId)
 }
 
-function sendMessage(message) {
-    console.log('message:', message)
-    console.log('message.value:', messages.value)
-
-    // 同步前端畫面，用不到了
-    // messages.value = [
-    //     ...messages.value,
-    //     {
-    //         _id: messages.value.length,
-    //         content: message.content,
-    //         senderId: currentUserId.value,
-    //         timestamp: new Date().toString().substring(16, 21),
-    //         date: new Date().toDateString(),
-    //     },
-    // ]
-
-    socket.emit('sendMessage', {
-        roomId: message.roomId,
-        // sendby: user.username,
-        // text: inputMsg.value,
-
-        _id: messages.value.length,
-        content: message.content,
+// 發送訊息：先透過 socket 即時傳送，然後用 API 儲存到資料庫
+async function sendMessage() {
+    if (!newMessage.value.trim() || !currentRoomId.value) return
+    const msgObj = {
+        roomId: currentRoomId.value,
+        content: newMessage.value,
         senderId: currentUserId.value,
-        // timestamp: new Date().toString().substring(16, 21),
-        // date: new Date().toDateString(),
-    })
-    console.log(fakeRoomsMsgs)
+        timestamp: Date.now(),
+    }
+    // 即時發送訊息
+    socket.emit('sendMessage', msgObj)
+    messages.value.push(msgObj)
+    // 呼叫 API 將訊息儲存到資料庫
+    try {
+        await apiAuth.post('/chat/messages', msgObj)
+    } catch (error) {
+        console.error('儲存訊息到資料庫失敗:', error)
+    }
+    newMessage.value = ''
+    nextTick(() => scrollToBottom())
 }
 
-function addNewMessage() {
-    setTimeout(() => {
-        messages.value = [
-            ...messages.value,
-            {
-                _id: messages.value.length,
-                content: 'NEW MESSAGE',
-                senderId: '1234',
-                timestamp: new Date().toString().substring(16, 21),
-                date: new Date().toDateString(),
-            },
-        ]
-    }, 2000)
+// 自動捲動訊息區到底部
+function scrollToBottom() {
+    const chatMessagesEl = document.querySelector('.chat-messages')
+    if (chatMessagesEl) {
+        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight
+    }
 }
 
-onMounted(() => {})
-// 組件銷毀時離該socket.io
-onUnmounted(() => {
-    socket.disconnect()
+// 格式化時間
+function formatTimestamp(ts) {
+    return dayjs(ts).format('HH:mm')
+}
+
+// 取得當前使用者所有聊天室
+async function getUserRooms() {
+    try {
+        const res = await apiAuth.get('/chat/rooms')
+        if (res.data.success) {
+            // 假設後端回傳資料格式為：{ _id, participants: [id1, id2], lastMessage, partnerName, partnerAvatar }
+            const fetchedRooms = res.data.result.map((room) => {
+                const partnerId = room.participants.find((id) => id !== currentUserId.value)
+                return {
+                    roomId: room._id,
+                    roomName: room.partnerName || '對話 - ' + partnerId,
+                    avatar: room.partnerAvatar || defaultAvatar,
+                    lastMessage: room.lastMessage || '',
+                    // users 格式符合 vue-advanced-chat 要求：每個使用者物件至少包含 _id 與 username
+                    users: [
+                        { _id: currentUserId.value, username: userStore.username },
+                        { _id: partnerId, username: room.partnerName || '聊天對象' },
+                    ],
+                }
+            })
+            chatRooms.value = fetchedRooms
+            rooms.value = fetchedRooms
+        }
+    } catch (error) {
+        console.error('getUserRooms error:', error)
+    }
+}
+
+// 建立或取得與 targetUserId 的聊天室
+async function createOrGetRoom() {
+    try {
+        const res = await apiAuth.post('/chat/room', { targetUserId })
+        if (res.data.success) {
+            currentRoomId.value = res.data.room._id
+            // 假設後端只回傳聊天室的 _id 與 participants，
+            // 我們自行組裝符合 vue-advanced-chat 格式的房間物件
+            const roomObj = {
+                roomId: res.data.room._id,
+                roomName: '對話', // 你可以用對方名稱組合，例如 "對話 - XXX"
+                avatar: '', // 可根據需要從後端取得
+                lastMessage: '',
+                users: [
+                    { _id: currentUserId.value, username: userStore.username },
+                    { _id: targetUserId, username: '聊天對象' },
+                ],
+            }
+            // 將新房間加入列表中
+            chatRooms.value = [roomObj, ...chatRooms.value]
+            rooms.value = [roomObj, ...rooms.value]
+            socket.emit('joinRoom', currentRoomId.value)
+            fetchMessages(currentRoomId.value)
+        } else {
+            console.error('取得房間失敗:', res.data.message)
+        }
+    } catch (error) {
+        console.error('createOrGetRoom error:', error)
+    }
+}
+
+// onMounted：如果網址帶 targetUserId 則建立或取得對話，否則取得所有聊天室
+onMounted(() => {
+    if (targetUserId && targetUserId !== '') {
+        createOrGetRoom()
+    }
+    getUserRooms()
 })
 </script>
 
-<style lang="scss">
-body {
-    font-family: 'Quicksand', sans-serif;
+<style scoped>
+.chat-container {
+    height: 100vh;
 }
-
-.vac-col-messages .vac-container-scroll {
-    scrollbar-width: thin;
-    scrollbar-color: #bbb #f0f0f0;
-
-    &::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-    }
-
-    &::-webkit-scrollbar-track {
-        background: #f0f0f0;
-        border-radius: 10px;
-    }
-
-    &::-webkit-scrollbar-thumb {
-        background: #bbb;
-        border-radius: 10px;
-
-        &:hover {
-            background: #999;
-        }
-    }
+.chat-sidebar {
+    border-right: 1px solid #eee;
+    padding: 16px;
+}
+.chat-main {
+    padding: 16px;
+    height: 100vh;
+}
+.chat-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+.chat-header {
+    font-size: 20px;
+    font-weight: bold;
+}
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    background-color: #fafafa;
+}
+.message-sent {
+    text-align: right;
+    margin-bottom: 12px;
+}
+.message-received {
+    text-align: left;
+    margin-bottom: 12px;
+}
+.message-content {
+    display: inline-block;
+    padding: 8px 12px;
+    border-radius: 16px;
+    background-color: #e0e0e0;
+}
+.message-sent .message-content {
+    background-color: #1976d2;
+    color: white;
+}
+.message-time {
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+}
+.chat-input {
+    display: flex;
+    align-items: center;
 }
 </style>
-<route lang="json">
-{
-    "meta": {
-        "layout": "chatroom",
-        "title": "聊天室",
-        "login": true
-    }
-}
-</route>
